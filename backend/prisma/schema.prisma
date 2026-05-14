@@ -1,0 +1,337 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// -----------------------------------------------------------------------------
+// ENUMS
+// -----------------------------------------------------------------------------
+
+enum Role {
+  STUDENT
+  TEACHER
+}
+
+enum AssignmentType {
+  MCQ
+  DESCRIPTIVE
+  MIXED
+}
+
+enum AnswerMode {
+  TYPED
+  CANVAS
+  UPLOAD
+  MIXED
+}
+
+enum AnswerStatus {
+  PENDING
+  EVALUATED
+  FAILED
+  FLAGGED
+}
+
+enum SubmissionStatus {
+  PENDING
+  GRADED
+  FAILED
+  UNDER_REVIEW
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FlagReason {
+  PLAGIARISM
+  LOW_CONFIDENCE
+  AI_DISAGREEMENT
+  OCR_UNCERTAIN
+  FRAUD_DETECTED
+  AI_GENERATED_TEXT
+}
+
+enum AuditAction {
+  AI_GRADED
+  TEACHER_OVERRIDDEN
+  TEACHER_APPROVED
+  TEACHER_REJECTED
+  FEEDBACK_MODIFIED
+  STUDENT_VIEWED
+  VIVA_GENERATED
+  RESULT_PUBLISHED
+}
+
+enum NotificationType {
+  SIGNUP
+  ASSIGNMENT_PUBLISHED
+  ASSIGNMENT_REMINDER
+  SUBMISSION_CONFIRMED
+  RESULT_PUBLISHED
+  FLAGGED_REVIEW
+  SYSTEM
+}
+
+enum Department {
+  COMPUTER_SCIENCE_ENGINEERING
+  ELECTRONICS_AND_COMMUNICATION_ENGINEERING
+  ELECTRICAL_AND_ELECTRONICS_ENGINEERING
+  MECHANICAL_ENGINEERING
+  CIVIL_ENGINEERING
+  AUTOMOBILE_ENGINEERING
+  CHEMICAL_ENGINEERING
+  INFORMATION_TECHNOLOGY
+  BIOTECHNOLOGY
+  PETROLEUM_ENGINEERING
+  AEROSPACE_ENGINEERING
+  METALLURGICAL_ENGINEERING
+  INDUSTRIAL_ENGINEERING
+  ENVIRONMENTAL_ENGINEERING
+  DATA_SCIENCE_ENGINEERING
+  ARTIFICIAL_INTELLIGENCE_ENGINEERING
+  ROBOTICS_ENGINEERING
+}
+
+enum AcademicYear {
+  BTECH_YEAR_1
+  BTECH_YEAR_2
+  BTECH_YEAR_3
+  BTECH_YEAR_4
+  MTECH_YEAR_1
+  MTECH_YEAR_2
+}
+
+enum Batch {
+  BATCH_1
+  BATCH_2
+  BATCH_3
+  BATCH_4
+  BATCH_5
+  BATCH_6
+  BATCH_7
+  BATCH_8
+  BATCH_9
+  BATCH_10
+}
+
+// -----------------------------------------------------------------------------
+// MODELS
+// -----------------------------------------------------------------------------
+
+model User {
+  id         String      @id @db.Uuid
+  email      String      @unique
+  name       String
+  role       Role        @default(STUDENT)
+  department Department?
+
+  // OAuth / Social Auth fields
+  provider    String? // 'google', 'email', etc.
+  provider_id String?
+  avatar_url  String?
+
+  created_at DateTime @default(now())
+
+  // Relations
+  assignments   Assignment[]   @relation("TeacherAssignments")
+  submissions   Submission[]
+  notifications Notification[]
+  audit_logs    AuditLog[]     @relation("ActorLogs")
+
+  @@map("users")
+}
+
+model Assignment {
+  id         String         @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  teacher_id String         @db.Uuid
+  title      String
+  type       AssignmentType
+
+  department Department
+  year       AcademicYear
+  batch      Batch
+  subject    String
+
+  // Time-Lock Features
+  start_time       DateTime
+  end_time         DateTime
+  release_marks_at DateTime
+
+  // Notification toggle
+  notify_students Boolean @default(true)
+
+  created_at DateTime @default(now())
+
+  // Relations
+  teacher        User           @relation("TeacherAssignments", fields: [teacher_id], references: [id])
+  questions      Question[]
+  submissions    Submission[]
+  embedding_docs EmbeddingDoc[]
+
+  @@map("assignments")
+}
+
+model Question {
+  id            String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  assignment_id String     @db.Uuid
+  question_text String     @db.Text
+  image_url     String?
+  max_marks     Float
+  answer_mode   AnswerMode @default(TYPED)
+
+  // Descriptive fields
+  model_answer String? @db.Text
+
+  // Rubric items: [{ concept: "TCP Handshake", marks: 2, weightage: 40 }]
+  rubric_items Json?
+
+  // MCQ fields
+  mcq_options     Json?
+  mcq_answer      String?
+  mcq_explanation String? @db.Text
+
+  // Relations
+  assignment Assignment @relation(fields: [assignment_id], references: [id], onDelete: Cascade)
+  answers    Answer[]
+
+  @@map("questions")
+}
+
+model Submission {
+  id            String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  assignment_id String @db.Uuid
+  student_id    String @db.Uuid
+
+  total_score Float?
+  status      SubmissionStatus @default(PENDING)
+
+  // Fraud & timing metadata
+  timing_data Json?
+  fraud_flags Json?
+
+  submitted_at DateTime @default(now())
+
+  // Relations
+  assignment Assignment @relation(fields: [assignment_id], references: [id])
+  student    User       @relation(fields: [student_id], references: [id])
+  answers    Answer[]
+  audit_logs AuditLog[]
+
+  @@unique([assignment_id, student_id])
+  @@map("submissions")
+}
+
+model Answer {
+  id            String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  submission_id String     @db.Uuid
+  question_id   String     @db.Uuid
+  answer_mode   AnswerMode @default(TYPED)
+
+  // Answer content by mode
+  typed_text     String? @db.Text
+  file_url       String?
+  canvas_json    Json?
+  canvas_png_url String?
+  equation_latex String? @db.Text
+
+  // OCR / Extraction
+  ocr_text    String? @db.Text
+  ocr_quality String? // 'good' | 'blurry' | 'skewed'
+
+  // AI Scoring — Dual Consensus
+  gemini_score Float?
+  llama_score  Float?
+  score        Float?
+
+  // Explainable grading fields
+  ai_feedback             String? @db.Text
+  strengths               Json? // String[]
+  weaknesses              Json? // String[]
+  missing_concepts        Json? // String[]
+  improvement_suggestions Json? // String[]
+  mark_breakdown          Json? // [{ item, awarded, max }]
+
+  // Confidence & Integrity
+  confidence_score Float?
+  plagiarism_score Float?
+  risk_level       RiskLevel?
+  ai_generated     Boolean?
+
+  // Flags
+  is_flagged  Boolean     @default(false)
+  flag_reason FlagReason?
+
+  // Self-verification
+  self_verified Boolean @default(false)
+
+  // Viva
+  viva_questions Json? // String[]
+
+  // Teacher fields
+  teacher_feedback String?  @db.Text
+  teacher_approved Boolean?
+
+  // Legacy MCQ
+  mcq_selected String?
+
+  status AnswerStatus @default(PENDING)
+
+  // Relations
+  submission Submission @relation(fields: [submission_id], references: [id], onDelete: Cascade)
+  question   Question   @relation(fields: [question_id], references: [id], onDelete: Cascade)
+
+  @@unique([submission_id, question_id])
+  @@map("answers")
+}
+
+model AuditLog {
+  id            String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  action        AuditAction
+  actor_id      String      @db.Uuid
+  submission_id String?     @db.Uuid
+  target_id     String? // answer ID or submission ID
+  metadata      Json?
+  created_at    DateTime    @default(now())
+
+  actor      User        @relation("ActorLogs", fields: [actor_id], references: [id])
+  submission Submission? @relation(fields: [submission_id], references: [id])
+
+  @@map("audit_logs")
+}
+
+model Notification {
+  id         String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id    String           @db.Uuid
+  type       NotificationType
+  title      String
+  message    String           @db.Text
+  metadata   Json?
+  is_read    Boolean          @default(false)
+  created_at DateTime         @default(now())
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@map("notifications")
+}
+
+model EmbeddingDoc {
+  id            String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  assignment_id String   @db.Uuid
+  content       String   @db.Text
+  chunk_index   Int
+  doc_name      String?
+  created_at    DateTime @default(now())
+
+  assignment Assignment @relation(fields: [assignment_id], references: [id], onDelete: Cascade)
+
+  @@map("embedding_docs")
+}
